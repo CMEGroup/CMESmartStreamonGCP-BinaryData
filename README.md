@@ -36,7 +36,8 @@ Notes:
 the fact that MsgSeqNum is unsigned and parse it accordingly.
 
 
-#LICENSE
+# LICENSE
+
 BSD 3-Clause License
 
 Copyright (c) 2018, CME Group Inc.
