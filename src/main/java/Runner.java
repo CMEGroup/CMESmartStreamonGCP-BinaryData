@@ -1,8 +1,3 @@
-/*
- * Notice: This software is proprietary to CME, its affiliates, partners and/or licensors.
- * Unauthorized copying, distribution or use is strictly prohibited.  All rights reserved.
- */
-
 /**
  * @author Sebastian Demian - sebastian.demian@cmegroup.com
  * @since 9/20/18
