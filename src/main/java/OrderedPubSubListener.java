@@ -1,5 +1,3 @@
-
-
 import com.google.api.gax.core.FixedCredentialsProvider;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.cloud.pubsub.v1.AckReplyConsumer;
@@ -47,8 +45,8 @@ public class OrderedPubSubListener {
       //extract payload (sbe message)
       byte[] payload = message.toByteArray();
 
-       // - return a new unit of work
-       // - alternatively introduce an object pool here to reduce object creation
+      // - return a new unit of work
+      // - alternatively introduce an object pool here to reduce object creation
       return new UnitOfWork(publishSeqNum, sendingTime, payload);
     }
 
@@ -83,59 +81,64 @@ public class OrderedPubSubListener {
     ProjectSubscriptionName subscriptionName = ProjectSubscriptionName.of(projectId, subscription);
 
     Subscriber subscriber = Subscriber.newBuilder(subscriptionName, new PubSubMessageReceiver())
-          .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
-          .setParallelPullCount(PARALLEL_PULL_COUNT)
-          .build();
-      subscriber.startAsync().awaitRunning();
-    }
+            .setCredentialsProvider(FixedCredentialsProvider.create(credentials))
+            .setParallelPullCount(PARALLEL_PULL_COUNT)
+            .build();
+    subscriber.startAsync().awaitRunning();
+  }
 
+  private boolean sequenceNumOrderCheck(long current, long next) {
+    return (next > current) && (next == (current + 1));
+  }
 
-
-  public void start() throws InterruptedException {
-
+  private void bufferBeforeProcessing() throws InterruptedException {
     while (sortedMessageSet.isEmpty()){
       // - if we start listener before we start publisher there will be no messages in the topic
       // - wait here until we receive the first few messages
       Thread.sleep(1000);
       System.out.println("Waiting for publisher to be started...");
     }
-
-    // - allow first messages to come in and get ordered before we start processing
     System.out.println("Buffering for 10 seconds...\n");
     Thread.sleep(10000);
     System.out.println("Internal sorted set size after buffering is: " + sortedMessageSet.size());
+    System.out.println("Finished buffering... processing commencing.");
+  }
 
-    //remove the first element from the set and initialize the first sequence number
-    long currentSequenceNumber = sortedMessageSet.pollFirst().getMsgSeqNum();
+  private void logWarning(UnitOfWork currentMessage, UnitOfWork nextMessage) {
+    // - consider throwing an exception should this repeat > threshold for said seqNum
+    System.err.println("Warning: next seq number not in order." +
+            "Currently at: " + currentMessage.getMsgSeqNum() +
+            "Expected: " + currentMessage.getMsgSeqNum() + 1 +
+            "Got: " + nextMessage.getMsgSeqNum());
+  }
 
+  public void start() throws InterruptedException {
+
+    // - allow messages to arrive and get ordered before we start processing
+    bufferBeforeProcessing();
+
+    UnitOfWork currentMessage = sortedMessageSet.pollFirst();
+    UnitOfWork nextMessage = sortedMessageSet.first();
     while (true){
 
       //if set is ever emptied, wait for new messages
-      if (sortedMessageSet.isEmpty()){
-        continue;
+      if (sortedMessageSet.isEmpty()) { continue; }
+
+      // - check ordering is correct before moving onto the next message.
+      if (sequenceNumOrderCheck(currentMessage.getMsgSeqNum(), nextMessage.getMsgSeqNum())) {
+        // Some usages:
+        //long sendingTime = currentMessage.getSendingTime();
+        //byte[] payload = currentMessage.getPayload();
+        System.out.println("Received message with Sequence Number: " + currentMessage.getMsgSeqNum());
+        currentMessage = sortedMessageSet.pollFirst();
+      } else {
+        logWarning(currentMessage, nextMessage);
       }
-
-      long nextSetSequenceNumber = sortedMessageSet.first().getMsgSeqNum();
-
-      //if the next message in the set has correct sequence, retrieve it
-      if (nextSetSequenceNumber == currentSequenceNumber + 1){
-
-        //remove the next element
-        UnitOfWork unitOfWork = sortedMessageSet.pollFirst();
-
-        System.out.println("Received message with Sequence Number: " + unitOfWork.getMsgSeqNum());
-
-        // More usages:
-        //long sendingTime = unitOfWork.getSendingTime();
-        //byte[] payload = unitOfWork.getPayload();
-
-        currentSequenceNumber++;
-
-
-      }
+      // - Hopefully the seqNum ordering check was successful but if not,
+      // don't worry, try returning the `first' element in the set again and
+      // hopefully it's the next seq you needed.
+      nextMessage = sortedMessageSet.first();
     }
   }
+
 }
-
-
-
