@@ -25,10 +25,12 @@ public class OrderedPubSubListener {
 
   static final String SENDING_TIME_ATTRIBUTE = "SendingTime";
 
-  // Recommendation: from our perf tests, we found that in order to keep up with consuming 10000 messages/second
-  // we need to set this configuration to 4 on a 4 core virtual machine (defaults to 1). Please tune it empirically.
-  private static final int PARALLEL_PULL_COUNT = 4;
+  // Based on google docs, best results are with 8 threads per core.
+  // See https://cloud.google.com/blog/products/data-analytics/testing-cloud-pubsub-clients-to-maximize-streaming-performance
+  private static final int PARALLEL_PULL_COUNT = 64;
 
+  private long previousUnitOfWorkProcessedTime = 0;
+  private final int maxWaitForNextSequence = 10; //time in seconds to consider a given message as missing, adjust accordingly
 
   static class PubSubMessageReceiver implements MessageReceiver {
 
@@ -45,7 +47,7 @@ public class OrderedPubSubListener {
       long sendingTime = Long.parseLong(sendingTimeAttribute);
 
       //extract payload (sbe message)
-      byte[] payload = message.toByteArray();
+      byte[] payload = message.getData().toByteArray();
 
        // - return a new unit of work
        // - alternatively introduce an object pool here to reduce object creation
@@ -106,7 +108,9 @@ public class OrderedPubSubListener {
     System.out.println("Internal sorted set size after buffering is: " + sortedMessageSet.size());
 
     //remove the first element from the set and initialize the first sequence number
-    long currentSequenceNumber = sortedMessageSet.pollFirst().getMsgSeqNum();
+    UnitOfWork unitOfWork = sortedMessageSet.pollFirst();
+    processUnitOfWork(unitOfWork);
+    long currentSequenceNumber = unitOfWork.getMsgSeqNum();
 
     while (true){
 
@@ -121,19 +125,30 @@ public class OrderedPubSubListener {
       if (nextSetSequenceNumber == currentSequenceNumber + 1){
 
         //remove the next element
-        UnitOfWork unitOfWork = sortedMessageSet.pollFirst();
-
-        System.out.println("Received message with Sequence Number: " + unitOfWork.getMsgSeqNum());
-
-        // More usages:
-        //long sendingTime = unitOfWork.getSendingTime();
-        //byte[] payload = unitOfWork.getPayload();
+        unitOfWork = sortedMessageSet.pollFirst();
+        processUnitOfWork(unitOfWork);
 
         currentSequenceNumber++;
+        previousUnitOfWorkProcessedTime = System.currentTimeMillis();
 
-
+      }else if(nextSetSequenceNumber <= currentSequenceNumber) {
+        //the first message in set has a sequence lower than the last processed, ie: being already processed
+        System.out.println("Dropping message with sequence: "+nextSetSequenceNumber);
+        sortedMessageSet.pollFirst();
+      }else{
+        if(System.currentTimeMillis() - previousUnitOfWorkProcessedTime >  (maxWaitForNextSequence*1000)){
+          System.out.println("Sequence "+(currentSequenceNumber+1)+ " missing, skipping after waiting period");
+          currentSequenceNumber = sortedMessageSet.first().getMsgSeqNum() - 1;
+        }
       }
     }
+  }
+    private void processUnitOfWork(UnitOfWork unitOfWork) {
+    System.out.println("Received message with Sequence Number: " + unitOfWork.getMsgSeqNum());
+
+    // More usages:
+    //long sendingTime = unitOfWork.getSendingTime();
+    //byte[] payload = unitOfWork.getPayload();
   }
 }
 
